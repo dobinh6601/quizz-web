@@ -1,5 +1,5 @@
 // Cho phép mở Quizz khi không có mạng. Ưu tiên bản mới trên mạng, mất mạng thì dùng bản đã lưu.
-const CACHE = "quizz-web-1792746198";
+const CACHE = "quizz-web-1793070426";
 const FILES = ["./", "index.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png",
                "icons/apple-touch-icon.png"];
 
