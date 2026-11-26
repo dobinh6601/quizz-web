@@ -490,7 +490,7 @@ function parse(marked) {
 
 const norm = s => s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
-function dedupe(questions) {
+function dedupe(questions, pairs) {
   const kept = [], index = new Map(), warnings = [];
   let removed = 0;
   for (const q of questions) {
@@ -509,12 +509,14 @@ function dedupe(questions) {
     if (!ansFirst.size && ansQ.size) first.correct = first.options.map((o, i) => ansQ.has(norm(o)) ? i : -1).filter(i => i >= 0);
     if (!first.explanation && q.explanation) first.explanation = q.explanation;
     removed++;
+    if (pairs) pairs.push([q.source, first.source]);
   }
   return [kept, removed, warnings];
 }
 
 function finish(questions, warnings, note = "") {
-  const [kept, removed, dup] = dedupe(questions);
+  const pairs = [];
+  const [kept, removed, dup] = dedupe(questions, pairs);
   warnings.push(...dup);
   kept.forEach((q, k) => {
     if (!q.correct.length) {
@@ -522,7 +524,8 @@ function finish(questions, warnings, note = "") {
       warnings.push(`Câu ${k + 1}${where}: chưa xác định được đáp án đúng.`);
     }
   });
-  note = [note, removed ? `Đã bỏ ${removed} câu trùng lặp.` : ""].filter(Boolean).join(" ");
+  const which = pairs.slice(0, 5).map(([a, b]) => `${a} giống hệt ${b}`).join("; ") + (pairs.length > 5 ? "; ..." : "");
+  note = [note, removed ? `Đã bỏ ${removed} câu trùng lặp (${which}).` : ""].filter(Boolean).join(" ");
   return { questions: kept, warnings, note };
 }
 
@@ -531,7 +534,8 @@ const NW = `(?![${WORD}])`;
 const M_HEAD = /^(?:câu\s*hỏi|question)\s*(\d{1,4})$/iu;
 const M_TEXT_MARK = /^(?:đoạn\s*văn\s*câu\s*hỏi|question\s*text)$/iu;
 const M_SELECT = new RegExp(`^(?:(?:câu\\s*hỏi|question)\\s*\\d{1,4}\\s*)?(?:chọn|select)${NW}[^:]{0,40}:$`, "iu");
-const M_FEEDBACK = /^(?:phản\s*hồi|feedback)$/iu;
+const M_SELECT_NUM = /^(?:câu\s*hỏi|question)\s*\d{1,4}\s*(?:chọn|select)/iu;
+const M_FEEDBACK =/^(?:phản\s*hồi|feedback)$/iu;
 const M_YOUR = new RegExp(`^(?:câu\\s*trả\\s*lời\\s*của\\s*bạn|your\\s*answer\\s*is)${NW}`, "iu");
 const M_RIGHT = /^(?:(?:các\s*)?câu\s*trả\s*lời\s*đúng\s*là|the\s*correct\s*answers?\s*(?:is|are))\s*:?\s*(.*)$/iu;
 const M_KEY = /^(?:đáp\s*án\s*đúng\s*là|đáp\s*án\s*đúng|đáp\s*án)\s*:\s*(.*)$/iu;
@@ -570,10 +574,15 @@ function matchAnswer(options, answer) {
 function parseMoodleOne(num, lines) {
   let i = lines.findIndex(l => M_TEXT_MARK.test(l));
   if (i < 0) { i = 0; while (i < lines.length && (!lines[i] || M_STATUS.test(lines[i]))) i++; } else i++;
-  let sel = null, fb = lines.length;
-  for (let k = i; k < lines.length; k++) if (M_SELECT.test(lines[k])) { sel = k; break; }
+  let fb = lines.length;
   for (let k = i; k < lines.length; k++) if (M_FEEDBACK.test(lines[k]) || M_RIGHT.test(lines[k])) { fb = k; break; }
-  if (sel === null || sel > fb) return null;
+  // dòng "Câu hỏi 1Chọn một:" của Moodle; đề bài cũng có thể có dòng "Chọn câu trả lời sai:" -> ưu tiên dòng có
+  // "Câu hỏi N" phía trước, nếu không có thì lấy dòng "Chọn ...:" cuối cùng trước phần phản hồi
+  const sels = [];
+  for (let k = i; k < fb; k++) if (M_SELECT.test(lines[k])) sels.push(k);
+  const pref = sels.filter(k => M_SELECT_NUM.test(lines[k]));
+  const sel = pref.length ? pref[0] : sels.length ? sels[sels.length - 1] : null;
+  if (sel === null) return null;
   const qText = lines.slice(i, sel).filter(Boolean).join("\n");
 
   let options = [], pending = false;
@@ -606,12 +615,15 @@ function parseMoodle(text) {
   const lines = text.split(/\r\n|\r|\n/).map(l => l.replace(/ /g, " ").trim());
   const heads = [];
   lines.forEach((l, k) => { const m = M_HEAD.exec(l); if (m) heads.push([k, m[1]]); });
-  const questions = [], warnings = [];
+  const questions = [], warnings = [], seen = {};
+  const multi = new Set(heads.map(h => h[1])).size < heads.length;   // nhiều lần làm bài ghép trong một file
   heads.forEach(([start, num], n) => {
     const end = n + 1 < heads.length ? heads[n + 1][0] : lines.length;
+    seen[num] = (seen[num] || 0) + 1;
+    const label = `Câu hỏi ${num}` + (multi ? ` (bài ${seen[num]})` : "");
     const q = parseMoodleOne(num, lines.slice(start + 1, end));
-    if (!q) { warnings.push(`Câu hỏi ${num}: không đọc được phương án (có thể không phải câu chọn đáp án).`); return; }
-    q.source = `Câu hỏi ${num}`;
+    if (!q) { warnings.push(`${label}: không đọc được phương án (có thể không phải câu chọn đáp án).`); return; }
+    q.source = label;
     questions.push(q);
   });
   if (!questions.length) return null;
