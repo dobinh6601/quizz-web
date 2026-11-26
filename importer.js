@@ -452,7 +452,7 @@ function fallbackBlocks(text) {
 const LOOK_FROM = "АВСЕНавсеΑΒΕΗ", LOOK_TO = "ABCEHabceABEH";
 const LOOKALIKE_LABEL = new RegExp(`(?<![${WORD}.])[${LOOK_FROM}](?=[.)])`, "gu");
 
-function parse(marked) {
+function parse(marked, keepDupes = false) {
   let text = marked.text.replace(LOOKALIKE_LABEL, ch => LOOK_TO[LOOK_FROM.indexOf(ch)]);
   let mask = marked.mask;
   const warnings = [];
@@ -485,12 +485,13 @@ function parse(marked) {
     warnings.push("Không nhận diện được câu hỏi nào. Hãy kiểm tra định dạng: \"Câu 1: ...\" rồi các dòng \"A. ...\", \"B. ...\"");
     return { questions, warnings, note: "" };
   }
-  return finish(questions, warnings);
+  return finish(questions, warnings, "", keepDupes);
 }
 
 const norm = s => s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
-function dedupe(questions, pairs) {
+// keep=true: vẫn tìm câu trùng (và bổ sung đáp án / lời giải còn thiếu) nhưng giữ lại tất cả
+function dedupe(questions, pairs, keep = false) {
   const kept = [], index = new Map(), warnings = [];
   let removed = 0;
   for (const q of questions) {
@@ -508,15 +509,24 @@ function dedupe(questions, pairs) {
     }
     if (!ansFirst.size && ansQ.size) first.correct = first.options.map((o, i) => ansQ.has(norm(o)) ? i : -1).filter(i => i >= 0);
     if (!first.explanation && q.explanation) first.explanation = q.explanation;
-    removed++;
     if (pairs) pairs.push([q.source, first.source]);
+    if (keep) {
+      if (!q.correct.length && first.correct.length) {   // câu sau chưa có đáp án -> lấy từ câu đầu
+        const ans = new Set(first.correct.map(i => norm(first.options[i])));
+        q.correct = q.options.map((o, i) => ans.has(norm(o)) ? i : -1).filter(i => i >= 0);
+      }
+      if (!q.explanation && first.explanation) q.explanation = first.explanation;
+      kept.push(q);
+      continue;
+    }
+    removed++;
   }
   return [kept, removed, warnings];
 }
 
-function finish(questions, warnings, note = "") {
+function finish(questions, warnings, note = "", keepDupes = false) {
   const pairs = [];
-  const [kept, removed, dup] = dedupe(questions, pairs);
+  const [kept, removed, dup] = dedupe(questions, pairs, keepDupes);
   warnings.push(...dup);
   kept.forEach((q, k) => {
     if (!q.correct.length) {
@@ -525,7 +535,9 @@ function finish(questions, warnings, note = "") {
     }
   });
   const which = pairs.slice(0, 5).map(([a, b]) => `${a} giống hệt ${b}`).join("; ") + (pairs.length > 5 ? "; ..." : "");
-  note = [note, removed ? `Đã bỏ ${removed} câu trùng lặp (${which}).` : ""].filter(Boolean).join(" ");
+  const dupNote = !pairs.length ? "" : keepDupes ? `Đã giữ cả ${pairs.length} câu trùng lặp (${which}).`
+    : `Đã bỏ ${removed} câu trùng lặp (${which}).`;
+  note = [note, dupNote].filter(Boolean).join(" ");
   return { questions: kept, warnings, note };
 }
 
@@ -610,7 +622,7 @@ function parseMoodleOne(num, lines) {
   return makeQ(qText || "(Không có nội dung câu hỏi)", options, correct, explanation.join("\n"), num);
 }
 
-function parseMoodle(text) {
+function parseMoodle(text, keepDupes = false) {
   if (!looksLikeMoodle(text)) return null;
   const lines = text.split(/\r\n|\r|\n/).map(l => l.replace(/ /g, " ").trim());
   const heads = [];
@@ -627,7 +639,8 @@ function parseMoodle(text) {
     questions.push(q);
   });
   if (!questions.length) return null;
-  return finish(questions, warnings, "Đã nhận dạng file bài làm Moodle/LMS (lấy đáp án và giải thích từ phần phản hồi).");
+  return finish(questions, warnings, "Đã nhận dạng file bài làm Moodle/LMS (lấy đáp án và giải thích từ phần phản hồi).",
+    keepDupes);
 }
 
 /* ============================================================ PDF (giống extract_pdf, dùng pdf.js của Mozilla)
@@ -817,8 +830,8 @@ class ImportError extends Error {}
 const answered = r => r.questions.filter(q => q.correct.length).length;
 const OPTS = { highlight: true, color: true, bold: false, underline: false, italic: false };
 
-// name: tên file; buf: ArrayBuffer. Trả về { questions, warnings, note }.
-async function parseFile(name, buf) {
+// name: tên file; buf: ArrayBuffer; keepDupes: giữ cả câu trùng lặp. Trả về { questions, warnings, note }.
+async function parseFile(name, buf, keepDupes = false) {
   const ext = (name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
   let extract;
   if (ext === ".docx") extract = await readDocx(buf);
@@ -827,14 +840,14 @@ async function parseFile(name, buf) {
   else if (ext === ".pdf") extract = await readPdf(buf);
   else throw new ImportError(`Định dạng ${ext || "này"} chưa được hỗ trợ. Hãy dùng .docx, .pdf, .txt hoặc .json.`);
   const marked = extract(OPTS);
-  const moodle = parseMoodle(marked.text);   // trang xem lại bài làm Moodle/LMS
+  const moodle = parseMoodle(marked.text, keepDupes);   // trang xem lại bài làm Moodle/LMS
   if (moodle) return moodle;
-  const result = parse(marked);
+  const result = parse(marked, keepDupes);
   if (result.questions.length && answered(result) === 0) {
     // không thấy đáp án bôi màu -> tự thử in đậm / gạch chân / in nghiêng
     const names = { bold: "in đậm", underline: "gạch chân", italic: "in nghiêng" };
     for (const attr of ["bold", "underline", "italic"]) {
-      const alt = parse(extract(Object.assign({}, OPTS, { [attr]: true })));
+      const alt = parse(extract(Object.assign({}, OPTS, { [attr]: true })), keepDupes);
       if (answered(alt) > answered(result)) {
         alt.note = [`Không thấy đáp án bôi màu — đã tự nhận đáp án theo chữ ${names[attr]}.`, alt.note].filter(Boolean).join(" ");
         return alt;

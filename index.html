@@ -268,35 +268,51 @@ function importBanks(banks, ask) {
   if (added || replaced) save();
   return [added, replaced];
 }
-/* Xem trước đề vừa đọc từ file Word / .txt rồi lưu vào thư viện. Trả về [thêm, cập nhật]. */
-function reviewImport(fileName, r) {
+/* Xem trước đề vừa đọc từ file rồi lưu vào thư viện. reparse(keep) đọc lại file khi bật/tắt "Giữ cả câu trùng lặp".
+   Trả về [thêm, cập nhật]. */
+function reviewImport(fileName, r, reparse) {
   return new Promise(resolve => {
-    const ok = r.questions.filter(q => q.correct.length).length, missing = r.questions.length - ok;
-    const name = fileName.replace(/\.[^.]+$/, "").trim() || "Bộ đề mới";
-    const preview = r.questions.map((q, k) => `<div class="pq${q.correct.length ? "" : " none"}">
-      <div class="qt">${k + 1}. ${esc(q.text)}</div>
-      ${q.options.map((o, i) => `<div class="po${q.correct.includes(i) ? " ok" : ""}">${LETTERS[i]}. ${esc(o)}</div>`).join("")}
-      ${q.explanation ? `<div class="pe muted small">💡 ${esc(q.explanation)}</div>` : ""}</div>`).join("");
-    const sh = openSheet(`<div class="row"><b class="grow" style="font-size:18px">📄 Nhập đề từ file</b>
-      <button class="btn ghost" style="min-height:36px" data-close>Hủy</button></div>
-      <p class="muted small" style="margin:4px 0 10px">${esc(fileName)}</p>
-      <div class="notice${missing ? " warn" : ""}"><b>${r.questions.length} câu</b> · ${ok} câu có đáp án${missing
-        ? ` · <b>${missing} câu chưa có đáp án</b> (sẽ bị bỏ qua khi làm bài)` : ""}${r.note ? `<div class="small" style="margin-top:4px">${esc(r.note)}</div>` : ""}</div>
-      ${r.warnings.length ? `<details style="margin-bottom:10px"><summary class="small">⚠ ${r.warnings.length} cảnh báo</summary>
-        <ul class="warns small">${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul></details>` : ""}
-      <label class="small" for="impName" style="font-weight:600">Tên bộ đề</label>
-      <input id="impName" class="text-in" style="margin:4px 0 12px" value="${esc(name)}" autocomplete="off">
-      <button class="btn block big" id="impSave"${ok ? "" : " disabled"}>💾 Lưu vào thư viện</button>
-      ${ok ? "" : `<p class="small" style="color:var(--bad)">Không câu nào có đáp án — hãy đánh dấu đáp án đúng trong file (bôi màu, in đậm, gạch chân, in nghiêng hoặc dòng "Đáp án: B").</p>`}
-      <details style="margin-top:12px"><summary class="small">Xem trước các câu</summary>${preview}</details>`);
+    let name = fileName.replace(/\.[^.]+$/, "").trim() || "Bộ đề mới";
+    const keep = () => !!store.settings.keepDupes;
+    const sh = openSheet("");
+    const box = $(".in", sh);
+    const draw = () => {
+      const ok = r.questions.filter(q => q.correct.length).length, missing = r.questions.length - ok;
+      const preview = r.questions.map((q, k) => `<div class="pq${q.correct.length ? "" : " none"}">
+        <div class="qt">${k + 1}. ${esc(q.text)}</div>
+        ${q.options.map((o, i) => `<div class="po${q.correct.includes(i) ? " ok" : ""}">${LETTERS[i]}. ${esc(o)}</div>`).join("")}
+        ${q.explanation ? `<div class="pe muted small">💡 ${esc(q.explanation)}</div>` : ""}</div>`).join("");
+      box.innerHTML = `<div class="row"><b class="grow" style="font-size:18px">📄 Nhập đề từ file</b>
+        <button class="btn ghost" style="min-height:36px" data-close>Hủy</button></div>
+        <p class="muted small" style="margin:4px 0 10px">${esc(fileName)}</p>
+        <div class="notice${missing ? " warn" : ""}"><b>${r.questions.length} câu</b> · ${ok} câu có đáp án${missing
+          ? ` · <b>${missing} câu chưa có đáp án</b> (sẽ bị bỏ qua khi làm bài)` : ""}${r.note ? `<div class="small" style="margin-top:4px">${esc(r.note)}</div>` : ""}</div>
+        <div class="field" style="border:0;padding:0 0 10px"><label for="impKeep" class="small">Giữ cả câu trùng lặp
+          <div class="muted small" style="font-weight:400">Tắt: các câu giống hệt nhau được gộp thành 1 câu</div></label>
+          <label class="switch"><input type="checkbox" id="impKeep" ${keep() ? "checked" : ""}><span></span></label></div>
+        ${r.warnings.length ? `<details style="margin-bottom:10px"><summary class="small">⚠ ${r.warnings.length} cảnh báo</summary>
+          <ul class="warns small">${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul></details>` : ""}
+        <label class="small" for="impName" style="font-weight:600">Tên bộ đề</label>
+        <input id="impName" class="text-in" style="margin:4px 0 12px" value="${esc(name)}" autocomplete="off">
+        <button class="btn block big" id="impSave"${ok ? "" : " disabled"}>💾 Lưu vào thư viện</button>
+        ${ok ? "" : `<p class="small" style="color:var(--bad)">Không câu nào có đáp án — hãy đánh dấu đáp án đúng trong file (bôi màu, in đậm, gạch chân, in nghiêng hoặc dòng "Đáp án: B").</p>`}
+        <details style="margin-top:12px"><summary class="small">Xem trước các câu</summary>${preview}</details>`;
+      $("#impName", box).oninput = e => { name = e.target.value; };
+      $("#impKeep", box).onchange = async e => {
+        store.settings.keepDupes = e.target.checked; save();
+        e.target.disabled = true;
+        try { r = await reparse(e.target.checked); } catch (err) { toast("Không đọc lại được file: " + err.message); }
+        draw();
+      };
+      $("#impSave", box).onclick = () => {
+        const questions = r.questions.map(cleanQuestion).filter(Boolean);
+        done(importBanks([{ pcId: "", name: name.trim() || "Bộ đề mới", questions }], true));
+      };
+    };
     let settled = false;
     const done = v => { if (settled) return; settled = true; sh.remove(); resolve(v); };
     sh.addEventListener("click", e => { if (e.target === sh || e.target.hasAttribute("data-close")) done([0, 0]); });
-    $("#impSave", sh).onclick = () => {
-      const bankName = $("#impName", sh).value.trim() || name;
-      const questions = r.questions.map(cleanQuestion).filter(Boolean);
-      done(importBanks([{ pcId: "", name: bankName, questions }], true));
-    };
+    draw();
   });
 }
 const DOC_EXT = /\.(docx|doc|txt|pdf)$/i;
@@ -306,10 +322,11 @@ async function importFiles(files) {
     if (DOC_EXT.test(f.name)) {
       let r;
       if (/\.pdf$/i.test(f.name)) toast(`Đang đọc ${f.name}...`, 1800);
-      try { r = await QuizzImport.parseFile(f.name, await f.arrayBuffer()); }
+      const read = async keep => QuizzImport.parseFile(f.name, await f.arrayBuffer(), keep);
+      try { r = await read(!!store.settings.keepDupes); }
       catch (e) { bad.push(`${f.name} (${e instanceof QuizzImport.ImportError ? e.message : "lỗi: " + e.message})`); continue; }
       if (!r.questions.length) { bad.push(`${f.name} (${r.warnings[0] || "không thấy câu hỏi nào"})`); continue; }
-      const [a, rr] = await reviewImport(f.name, r);
+      const [a, rr] = await reviewImport(f.name, r, read);
       added += a; replaced += rr;
       continue;
     }
@@ -626,7 +643,7 @@ function renderBank(app) {
     if (store.session && !store.session.finished && !confirm("Đang có bài làm dở. Bỏ bài đó để làm bài mới?")) return;
     const n = Math.max(1, Math.min(total, parseInt(cnt.value, 10) || total));
     const minutes = Math.max(0, parseFloat(String($("#min").value).replace(",", ".")) || 0);
-    store.settings = { mode, count: n < total ? n : 0, minutes, shuffleQ: $("#sq").checked, shuffleO: $("#so").checked };
+    Object.assign(store.settings, { mode, count: n < total ? n : 0, minutes, shuffleQ: $("#sq").checked, shuffleO: $("#so").checked });
     let qs = playable(b).slice();
     if (store.settings.shuffleQ) shuffle(qs);
     startSession(b, qs.slice(0, n), mode, Math.round(minutes * 60), store.settings.shuffleO);
