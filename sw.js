@@ -1,6 +1,6 @@
 // Cho phép mở Quizz khi không có mạng. Ưu tiên bản mới trên mạng, mất mạng thì dùng bản đã lưu.
-const CACHE = "quizz-web-1793070426";
-const FILES = ["./", "index.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png",
+const CACHE = "quizz-web-1795655860";
+const FILES = ["./", "index.html", "importer.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png",
                "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
