@@ -416,7 +416,8 @@ function parseBlock(text, mask, lo, hi, number, label, warnings) {
     let end = i + 1 < chain.length ? chain[i + 1][0] : hi;
     if (i === chain.length - 1 && multiline.length && !multiline.some(Boolean)) {
       // các phương án trước đều 1 dòng -> phương án cuối cũng chỉ lấy 1 dòng
-      const nl = text2.indexOf("\n", e);
+      let nl = text2.indexOf("\n", e);
+      while (nl !== -1 && nl < hi && !text2.slice(e, nl).trim()) nl = text2.indexOf("\n", nl + 1);   // nhãn "D." nằm riêng một dòng
       if (nl !== -1 && nl < hi && text2.slice(nl, hi).trim()) end = nl;
     }
     const raw = text2.slice(e, end);
@@ -617,6 +618,188 @@ function parseMoodle(text) {
   return finish(questions, warnings, "Đã nhận dạng file bài làm Moodle/LMS (lấy đáp án và giải thích từ phần phản hồi).");
 }
 
+/* ============================================================ PDF (giống extract_pdf, dùng pdf.js của Mozilla)
+   Chữ lấy từ lớp text của PDF; bôi màu / chữ màu / gạch chân được nhận bằng cách vẽ trang ra ảnh rồi xem màu
+   quanh từng ký tự (bắt được cả highlight vẽ sẵn lẫn highlight tạo bằng Adobe/Foxit/Edge). */
+const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/";
+let pdfjsReady = null;
+function loadPdfjs() {
+  if (!pdfjsReady) {
+    if (!Promise.withResolvers) Promise.withResolvers = function () {   // iOS < 17.4
+      let resolve, reject;
+      const promise = new this((a, b) => { resolve = a; reject = b; });
+      return { promise, resolve, reject };
+    };
+    pdfjsReady = import(PDFJS + "pdf.min.mjs").then(m => { m.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.mjs"; return m; })
+      .catch(() => { pdfjsReady = null; throw new ImportError("Không tải được bộ đọc PDF — lần đầu đọc PDF cần có mạng. Hãy thử lại."); });
+  }
+  return pdfjsReady;
+}
+
+const PAGE_NUM = /^\s*(?:trang|page|tr\.)?\s*-?\s*\d{1,4}\s*-?(?:\s*(?:\/|of|trên)\s*\d{1,4})?\s*$/iu;
+const hfKey = t => t.trim().toLowerCase().replace(/\d+/g, "#");
+// Các dòng lặp lại ở lề trên/dưới nhiều trang (tiêu đề, số trang) -> bỏ qua
+function headerFooterKeys(pages) {
+  const counts = new Map();
+  for (const pg of pages) {
+    const seen = new Set();
+    for (const ln of pg.lines) {
+      if ((ln.y1 < pg.h * 0.09 || ln.y0 > pg.h * 0.91) && ln.text.length > 0 && ln.text.length <= 120) seen.add(hfKey(ln.text));
+    }
+    for (const k of seen) counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const need = Math.max(2, Math.ceil(pages.length * 2 / 5));
+  return new Set([...counts].filter(([, c]) => c >= need).map(([k]) => k));
+}
+
+const HIST = new Uint32Array(4096);
+// Xem màu quanh một ký tự trên ảnh trang: nền (bôi màu?), màu chữ, có gạch chân không
+function inspectGlyph(img, scale, x0, x1, top, base, bottom) {
+  const W = img.width, H = img.height, d = img.data;
+  const X0 = Math.max(0, Math.floor(x0)), X1 = Math.min(W, Math.ceil(x1));
+  const Y0 = Math.max(0, Math.floor(top)), Y1 = Math.min(H, Math.ceil(bottom));
+  const res = { hl: false, color: false, ul: false };
+  if (X1 <= X0 || Y1 <= Y0) return res;
+  let bestK = 0, bestN = -1;
+  const touched = [];
+  for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) {
+    const i = (y * W + x) * 4, k = (d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | d[i + 2] >> 4;
+    const n = ++HIST[k];
+    if (n === 1) touched.push(k);
+    if (n > bestN) { bestN = n; bestK = k; }
+  }
+  for (const k of touched) HIST[k] = 0;
+  // màu nền thật = trung bình các điểm thuộc ô màu phổ biến nhất
+  let br = 0, bg = 0, bb = 0, bn = 0;
+  for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) {
+    const i = (y * W + x) * 4;
+    if (((d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | d[i + 2] >> 4) === bestK) { br += d[i]; bg += d[i + 1]; bb += d[i + 2]; bn++; }
+  }
+  br /= bn; bg /= bn; bb /= bn;
+  const dist = i => Math.abs(d[i] - br) + Math.abs(d[i + 1] - bg) + Math.abs(d[i + 2] - bb);
+  const lum = (r, g, b) => 0.3 * r + 0.59 * g + 0.11 * b;
+  const white = br > 237 && bg > 237 && bb > 237, black = br < 38 && bg < 38 && bb < 38;
+  if (!white && !black) {
+    // vùng tô cao quá 45pt là khung/nền trang trí, không phải bôi màu đáp án (giống bản Windows)
+    const lim = Math.ceil(50 * scale), cx = Math.min(W - 1, Math.max(0, Math.round((X0 + X1) / 2)));
+    const bgLum = lum(br, bg, bb);
+    const run = (from, step) => {
+      let n = 0;
+      for (let y = from; y >= 0 && y < H && n < lim; y += step, n++) {
+        const i = (y * W + cx) * 4;
+        if (dist(i) > 40 && lum(d[i], d[i + 1], d[i + 2]) > bgLum) break;   // gặp nền sáng hơn (giấy trắng)
+      }
+      return n;
+    };
+    res.hl = (run(Y0 - 1, -1) + run(Y1, 1) + (Y1 - Y0)) / scale < 45;
+  }
+  // màu chữ = điểm khác nền nhiều nhất
+  let far = -1, fi = -1;
+  for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) {
+    const i = (y * W + x) * 4, v = dist(i);
+    if (v > far) { far = v; fi = i; }
+  }
+  if (far > 90) res.color = isColorful(d[fi] / 255, d[fi + 1] / 255, d[fi + 2] / 255);
+  // gạch chân: một hàng điểm đậm chạy gần hết bề ngang ký tự, ngay dưới chân chữ
+  const uy0 = Math.max(0, Math.floor(base + 1)), uy1 = Math.min(H, Math.ceil(base + (bottom - base) * 1.6 + 1));
+  for (let y = uy0; y < uy1 && !res.ul; y++) {
+    let ink = 0;
+    for (let x = X0; x < X1; x++) {
+      const i = (y * W + x) * 4;
+      if (dist(i) > 80 && lum(d[i], d[i + 1], d[i + 2]) < lum(br, bg, bb) - 40) ink++;   // nét đậm hơn nền
+    }
+    if (ink >= (X1 - X0) * 0.9) res.ul = true;
+  }
+  return res;
+}
+
+async function readPdf(buf) {
+  const pdfjs = await loadPdfjs();
+  let doc;
+  try {
+    doc = await pdfjs.getDocument({ data: new Uint8Array(buf), isEvalSupported: false, fontExtraProperties: true }).promise;
+  } catch (e) {
+    if (e && e.name === "PasswordException") throw new ImportError("PDF này có đặt mật khẩu. Hãy mở bằng trình đọc PDF, nhập mật khẩu rồi " +
+      "in/lưu lại thành PDF không mật khẩu.");
+    throw new ImportError("File PDF bị hỏng hoặc không phải PDF thật.");
+  }
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const pages = [];
+  let totalChars = 0;
+  try {
+    for (let n = 1; n <= doc.numPages; n++) {
+      const page = await doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, Math.sqrt(5e6 / (base.width * base.height)));   // ảnh không quá ~5 triệu điểm
+      const vp = page.getViewport({ scale });
+      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // intent "print": vẽ liền một mạch, không chờ khung hình của trình duyệt (nhanh và ổn định hơn)
+      await page.render({ canvasContext: ctx, viewport: vp, intent: "print" }).promise;
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const tc = await page.getTextContent();
+      const items = [];
+      for (const it of tc.items) {
+        if (!it.str) continue;
+        const t = pdfjs.Util.transform(vp.transform, it.transform);
+        const h = Math.hypot(t[2], t[3]) || Math.abs(it.height * scale) || 1;
+        const font = page.commonObjs.has(it.fontName) ? page.commonObjs.get(it.fontName) : null;
+        const fname = (font && font.name) || "";
+        items.push({ str: it.str, x0: t[4], x1: t[4] + it.width * scale, base: t[5], h,
+          bold: !!(font && font.bold) || /bold/i.test(fname), italic: !!(font && font.italic) || /italic|oblique/i.test(fname) });
+      }
+      // gom các mẩu chữ cùng dòng (theo đường chân chữ), rồi xếp trái -> phải
+      items.sort((a, b) => a.base - b.base || a.x0 - b.x0);
+      const groups = [];
+      for (const it of items) {
+        const g = groups[groups.length - 1];
+        if (g && Math.abs(it.base - g.base) < 0.5 * Math.min(it.h, g.h)) g.items.push(it);
+        else groups.push({ base: it.base, h: it.h, items: [it] });
+      }
+      const lines = groups.map(g => {
+        g.items.sort((a, b) => a.x0 - b.x0);
+        const chars = [];
+        let prev = null;
+        for (const it of g.items) {
+          if (prev && it.x0 - prev.x1 > 0.25 * it.h && !/\s$/.test(prev.str) && !/^\s/.test(it.str)) chars.push({ c: " " });
+          const cps = Array.from(it.str), w = (it.x1 - it.x0) / cps.length;
+          cps.forEach((c, k) => {
+            const cx0 = it.x0 + w * k;
+            const g2 = /\s/.test(c) ? { hl: false, color: false, ul: false }
+              : inspectGlyph(img, scale, cx0, cx0 + w, it.base - 0.78 * it.h, it.base, it.base + 0.18 * it.h);
+            chars.push({ c, hl: g2.hl, color: g2.color, ul: g2.ul, bold: it.bold, italic: it.italic });
+            if (!/\s/.test(c)) totalChars++;
+          });
+          prev = it;
+        }
+        const y0 = Math.min(...g.items.map(i => i.base - 0.8 * i.h)), y1 = Math.max(...g.items.map(i => i.base + 0.2 * i.h));
+        return { y0, y1, chars, text: chars.map(c => c.c).join("") };
+      });
+      pages.push({ h: vp.height, lines });
+      page.cleanup();
+    }
+  } finally {
+    canvas.width = canvas.height = 0;
+    doc.destroy();
+  }
+  if (totalChars < 20 && pages.length) throw new ImportError("PDF này là ảnh scan (không có lớp chữ) nên không đọc được nội dung. " +
+    "Hãy dùng bản PDF/Word gốc, hoặc chạy nhận dạng chữ (OCR) trước khi nhập.");
+  const skip = headerFooterKeys(pages);
+  return opts => {
+    const out = new MarkedText();
+    for (const pg of pages) for (const ln of pg.lines) {
+      if ((ln.y1 < pg.h * 0.09 || ln.y0 > pg.h * 0.91) && (PAGE_NUM.test(ln.text) || skip.has(hfKey(ln.text)))) continue;
+      for (const ch of ln.chars) {
+        out.add(ch.c, (opts.color && ch.color) || (opts.bold && ch.bold) || (opts.italic && ch.italic) ||
+          (opts.highlight && ch.hl) || (opts.underline && ch.ul));
+      }
+      out.newline();
+    }
+    return out;
+  };
+}
+
 /* ============================================================ đọc file (giống parse_file) */
 class ImportError extends Error {}
 const answered = r => r.questions.filter(q => q.correct.length).length;
@@ -629,8 +812,8 @@ async function parseFile(name, buf) {
   if (ext === ".docx") extract = await readDocx(buf);
   else if (ext === ".txt") { const t = decodeTxt(buf).replace(/\r\n?/g, "\n"); extract = () => { const m = new MarkedText(); m.add(t, false); return m; }; }
   else if (ext === ".doc") throw new ImportError("File .doc (Word cũ) chưa được hỗ trợ. Hãy mở bằng Word và lưu lại dạng .docx.");
-  else if (ext === ".pdf") throw new ImportError("Bản web chưa đọc được PDF. Hãy nhập bằng Quizz trên máy tính rồi gửi sang, hoặc dùng file Word (.docx).");
-  else throw new ImportError(`Định dạng ${ext || "này"} chưa được hỗ trợ. Hãy dùng .docx, .txt hoặc .json.`);
+  else if (ext === ".pdf") extract = await readPdf(buf);
+  else throw new ImportError(`Định dạng ${ext || "này"} chưa được hỗ trợ. Hãy dùng .docx, .pdf, .txt hoặc .json.`);
   const marked = extract(OPTS);
   const moodle = parseMoodle(marked.text);   // trang xem lại bài làm Moodle/LMS
   if (moodle) return moodle;
@@ -649,7 +832,7 @@ async function parseFile(name, buf) {
   return result;
 }
 
-const api = { parseFile, parse, parseMoodle, MarkedText, ImportError, readDocx, OPTS };
+const api = { parseFile, parse, parseMoodle, MarkedText, ImportError, readDocx, readPdf, OPTS };
 if (typeof module === "object" && module.exports) module.exports = api;
 else root.QuizzImport = api;
 })(typeof self !== "undefined" ? self : this);

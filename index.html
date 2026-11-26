@@ -157,7 +157,7 @@ ol.steps li + li { margin-top: 6px; }
 <body>
 <div id="app" class="wrap"></div>
 <input type="file" id="file" multiple class="hidden"
-  accept=".json,.docx,.txt,application/json,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+  accept=".json,.docx,.pdf,.txt,application/json,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
 <script src="importer.js"></script>
 <script>
 "use strict";
@@ -305,6 +305,7 @@ async function importFiles(files) {
   for (const f of files) {
     if (DOC_EXT.test(f.name)) {
       let r;
+      if (/\.pdf$/i.test(f.name)) toast(`Đang đọc ${f.name}...`, 1800);
       try { r = await QuizzImport.parseFile(f.name, await f.arrayBuffer()); }
       catch (e) { bad.push(`${f.name} (${e instanceof QuizzImport.ImportError ? e.message : "lỗi: " + e.message})`); continue; }
       if (!r.questions.length) { bad.push(`${f.name} (${r.warnings[0] || "không thấy câu hỏi nào"})`); continue; }
@@ -516,12 +517,12 @@ function renderLibrary(app) {
     html += `<div class="card empty"><div class="big-emoji">📚</div><h2 style="margin:6px 0">Chưa có bộ đề</h2>
       <p class="muted">Trên máy tính: mở Quizz → <b>Thư viện đề</b> → <b>📱 Gửi sang điện thoại</b> → nhập mã hiện ra vào đây.</p>
       <button class="btn block big" onclick="openReceive()">📥 Nhận từ máy tính</button>
-      <button class="btn ghost block" style="margin-top:10px" onclick="$('#file').click()">📄 hoặc nhập file đề (Word, .txt, .json)</button></div>`;
+      <button class="btn ghost block" style="margin-top:10px" onclick="$('#file').click()">📄 hoặc nhập file đề (Word, PDF, .txt, .json)</button></div>`;
   } else {
     html += `<div class="card sync"><b>Đồng bộ với máy tính</b><div class="row">
       <button class="btn grow" onclick="openReceive()">📥 Nhận đề</button>
       <button class="btn ghost grow" onclick="sendHistory()">📤 Gửi điểm</button></div>
-      <button class="back small" style="margin-top:6px" onclick="$('#file').click()">＋ Nhập file đề (Word, .txt, .json)</button></div>`;
+      <button class="back small" style="margin-top:6px" onclick="$('#file').click()">＋ Nhập file đề (Word, PDF, .txt, .json)</button></div>`;
     for (const b of store.banks) {
       const ready = playable(b).length, hist = store.history[b.id] || [];
       const best = hist.length ? Math.max(...hist.map(h => h.score10)) : null;
@@ -549,12 +550,12 @@ function renderHelp(app) {
     <li>Ở đây: <b>📤 Gửi điểm</b> → hiện mã.</li>
     <li>Trên máy tính: Quizz → <b>Lịch sử</b> → <b>📱 Nhận điểm từ điện thoại</b> → nhập mã. Gửi lại nhiều lần cũng không bị trùng.</li>
   </ol></div>
-  <div class="card"><b>Nhập đề từ file Word / .txt</b><ol class="steps">
-    <li>Bấm <b>＋ Nhập file đề</b> → chọn file <b>.docx</b> hoặc <b>.txt</b> (trên iPhone: lưu file vào <b>Tệp</b> trước).</li>
+  <div class="card"><b>Nhập đề từ file Word / PDF / .txt</b><ol class="steps">
+    <li>Bấm <b>＋ Nhập file đề</b> → chọn file <b>.docx</b>, <b>.pdf</b> hoặc <b>.txt</b> (trên iPhone: lưu file vào <b>Tệp</b> trước).</li>
     <li>Câu hỏi dạng <i>"Câu 1: ..."</i> rồi các dòng <i>"A. ..."</i>, <i>"B. ..."</i>. Đáp án đúng được <b>bôi màu, tô màu chữ,
       in đậm, gạch chân hoặc in nghiêng</b>, hoặc có dòng <i>"Đáp án: B"</i>; dòng <i>"Giải thích: ..."</i> được giữ làm lời giải.</li>
-    <li>File <b>xem lại bài làm Moodle/LMS</b> (lưu ra Word) cũng nhập được: đáp án và giải thích lấy từ phần phản hồi.</li>
-    <li>Xem trước số câu, đặt tên rồi <b>Lưu vào thư viện</b>. PDF chưa đọc được trên điện thoại — hãy nhập bằng máy tính.</li>
+    <li>File <b>xem lại bài làm Moodle/LMS</b> (lưu ra Word hoặc PDF) cũng nhập được: đáp án và giải thích lấy từ phần phản hồi.</li>
+    <li>Xem trước số câu, đặt tên rồi <b>Lưu vào thư viện</b>. Lần đầu đọc PDF cần có mạng (tải bộ đọc PDF); PDF scan dạng ảnh chưa đọc được.</li>
   </ol></div>
   <div class="card"><b>Cách khác: file .json</b><div class="muted small" style="margin-top:6px">Trên máy tính chọn <b>Lưu file .json</b>
     (trong hộp gửi sang điện thoại) hoặc <b>Xuất</b> từng bộ đề → gửi file sang điện thoại, lưu vào <b>Tệp</b> → ở đây bấm <b>＋ Nhập file đề</b>.</div></div>
